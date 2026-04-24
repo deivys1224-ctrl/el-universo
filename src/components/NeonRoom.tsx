@@ -12,6 +12,7 @@ const PLAYER_HEIGHT = 1.7;
 const PLAYER_RADIUS = 0.4;
 const MOVE_SPEED = 4.5;
 const SOFA_SPAWN: [number, number, number] = [-6.4, PLAYER_HEIGHT, -6.2];
+const URL_MICHAEL_JACKSON = "https://www.google.com/search?igu=1";
 
 const WALL_COLOR = "#EAECEE";
 
@@ -147,7 +148,7 @@ type CssEmbed = {
   height: number;
   src: string;
   forwardOffset?: number;
-  kind?: "media" | "browser";
+  kind?: "media" | "browser" | "video";
   title?: string;
   isolateMouse?: boolean;
 };
@@ -185,15 +186,27 @@ function ScreenEmbedsCss3D({
       }
     };
     cssObjectsRef.current = embeds.map((embed) => {
-      const iframe = document.createElement("iframe");
-      iframe.src = embed.src;
-      iframe.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
-      iframe.referrerPolicy = "strict-origin-when-cross-origin";
-      iframe.style.width = "100%";
-      iframe.style.height = embed.kind === "browser" ? "calc(100% - 56px)" : "100%";
-      iframe.style.border = "0";
-      iframe.style.pointerEvents = "auto";
-      iframe.style.cursor = "auto";
+      const mediaEl: HTMLIFrameElement | HTMLVideoElement =
+        embed.kind === "video" ? document.createElement("video") : document.createElement("iframe");
+
+      if (mediaEl instanceof HTMLVideoElement) {
+        mediaEl.src = embed.src;
+        mediaEl.autoplay = true;
+        mediaEl.loop = true;
+        mediaEl.muted = true;
+        mediaEl.playsInline = true;
+        mediaEl.controls = true;
+        mediaEl.preload = "auto";
+      } else {
+        mediaEl.src = embed.src;
+        mediaEl.allow = "autoplay; fullscreen; picture-in-picture; encrypted-media";
+        mediaEl.referrerPolicy = "strict-origin-when-cross-origin";
+      }
+      mediaEl.style.width = "100%";
+      mediaEl.style.height = embed.kind === "browser" ? "calc(100% - 56px)" : "100%";
+      mediaEl.style.border = "0";
+      mediaEl.style.pointerEvents = "auto";
+      mediaEl.style.cursor = "auto";
 
       const shell = document.createElement("div");
       shell.style.width = "1280px";
@@ -205,7 +218,7 @@ function ScreenEmbedsCss3D({
       shell.style.flexDirection = "column";
       shell.tabIndex = 0;
 
-      if (embed.kind === "browser") {
+      if (embed.kind === "browser" && mediaEl instanceof HTMLIFrameElement) {
         const toolbar = document.createElement("div");
         toolbar.style.height = "56px";
         toolbar.style.display = "flex";
@@ -244,13 +257,13 @@ function ScreenEmbedsCss3D({
 
         backBtn.onclick = () => {
           try {
-            iframe.contentWindow?.history.back();
+            mediaEl.contentWindow?.history.back();
           } catch {
-            iframe.src = embed.src;
+            mediaEl.src = embed.src;
           }
         };
         homeBtn.onclick = () => {
-          iframe.src = embed.src;
+          mediaEl.src = embed.src;
         };
 
         toolbar.appendChild(backBtn);
@@ -259,14 +272,14 @@ function ScreenEmbedsCss3D({
         shell.appendChild(toolbar);
       }
 
-      shell.appendChild(iframe);
+      shell.appendChild(mediaEl);
 
       const engageMouse = (event?: Event) => {
         if (event) {
           event.stopPropagation();
         }
         unlockPointer();
-        iframe.focus();
+        mediaEl.focus();
         shell.focus();
         onEmbedInteractionChange?.(true);
         renderer.domElement.style.zIndex = "40";
@@ -282,10 +295,10 @@ function ScreenEmbedsCss3D({
       shell.addEventListener("mousedown", engageMouse);
       shell.addEventListener("wheel", engageMouse, { passive: true });
       shell.addEventListener("mouseleave", releaseMouse);
-      iframe.addEventListener("mouseenter", engageMouse);
-      iframe.addEventListener("mousemove", engageMouse);
-      iframe.addEventListener("mousedown", engageMouse);
-      iframe.addEventListener("wheel", engageMouse, { passive: true });
+      mediaEl.addEventListener("mouseenter", engageMouse);
+      mediaEl.addEventListener("mousemove", engageMouse);
+      mediaEl.addEventListener("mousedown", engageMouse);
+      mediaEl.addEventListener("wheel", engageMouse, { passive: true });
 
       const obj = new CSS3DObject(shell);
       obj.element.style.pointerEvents = "auto";
@@ -300,10 +313,10 @@ function ScreenEmbedsCss3D({
           shell.removeEventListener("mousedown", engageMouse);
           shell.removeEventListener("wheel", engageMouse);
           shell.removeEventListener("mouseleave", releaseMouse);
-          iframe.removeEventListener("mouseenter", engageMouse);
-          iframe.removeEventListener("mousemove", engageMouse);
-          iframe.removeEventListener("mousedown", engageMouse);
-          iframe.removeEventListener("wheel", engageMouse);
+          mediaEl.removeEventListener("mouseenter", engageMouse);
+          mediaEl.removeEventListener("mousemove", engageMouse);
+          mediaEl.removeEventListener("mousedown", engageMouse);
+          mediaEl.removeEventListener("wheel", engageMouse);
         },
       };
     });
@@ -365,7 +378,9 @@ function HoloScreens({
         rotation: [0, Math.PI, 0],
         width: panelWidth * 0.95,
         height: panelHeight * 0.9,
-        src: "https://www.youtube.com/embed/VOj_xsc-EBM?autoplay=1&mute=1&loop=1&playlist=VOj_xsc-EBM",
+        src: URL_MICHAEL_JACKSON,
+        kind: "browser",
+        title: "Google",
         forwardOffset: 0.01,
       },
       {
@@ -842,8 +857,16 @@ function EarthMoonAnchor() {
 // ---------- First Person Controller (WASD) ----------
 function FirstPersonController({
   onLockChange,
+  onMenuToggleReady,
+  isMobile,
+  mobileMoveRef,
+  mobileLookRef,
 }: {
   onLockChange: (value: boolean) => void;
+  onMenuToggleReady?: (toggle: (() => void) | null) => void;
+  isMobile: boolean;
+  mobileMoveRef: MutableRefObject<{ x: number; y: number }>;
+  mobileLookRef: MutableRefObject<{ dx: number; dy: number }>;
 }) {
   const { camera, gl } = useThree();
   const controlsRef = useRef<ThreePointerLockControls | null>(null);
@@ -855,9 +878,11 @@ function FirstPersonController({
   });
   const direction = useRef(new THREE.Vector3());
   const right = useRef(new THREE.Vector3());
+  const touchLookVelocity = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
     camera.position.set(...SOFA_SPAWN);
+    camera.rotation.order = "YXZ";
   }, [camera]);
 
   useEffect(() => {
@@ -883,6 +908,19 @@ function FirstPersonController({
       controlsRef.current = null;
     };
   }, [camera, gl, onLockChange]);
+
+  useEffect(() => {
+    if (!onMenuToggleReady) return;
+    onMenuToggleReady(() => {
+      const controls = controlsRef.current;
+      if (!controls) return;
+      if (controls.isLocked) controls.unlock();
+      else controls.lock();
+    });
+    return () => {
+      onMenuToggleReady(null);
+    };
+  }, [onMenuToggleReady]);
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -914,11 +952,33 @@ function FirstPersonController({
 
   useFrame((_, delta) => {
     const controls = controlsRef.current;
-    if (!controls?.isLocked) return;
+    if (!isMobile && !controls?.isLocked) return;
+
+    if (isMobile) {
+      const look = mobileLookRef.current;
+      const velocity = touchLookVelocity.current;
+      velocity.x += look.dx * 0.00055;
+      velocity.y += look.dy * 0.00055;
+      look.dx = 0;
+      look.dy = 0;
+
+      velocity.x *= 0.84;
+      velocity.y *= 0.84;
+
+      if (Math.abs(velocity.x) > 0.00001 || Math.abs(velocity.y) > 0.00001) {
+        camera.rotation.y -= velocity.x;
+        camera.rotation.x -= velocity.y;
+        camera.rotation.x = THREE.MathUtils.clamp(camera.rotation.x, -Math.PI / 2 + 0.05, Math.PI / 2 - 0.05);
+      }
+    }
 
     const state = moveState.current;
-    const forwardInput = (state.forward ? 1 : 0) - (state.backward ? 1 : 0);
-    const strafeInput = (state.right ? 1 : 0) - (state.left ? 1 : 0);
+    const keyboardForward = (state.forward ? 1 : 0) - (state.backward ? 1 : 0);
+    const keyboardStrafe = (state.right ? 1 : 0) - (state.left ? 1 : 0);
+    const touchForward = isMobile ? -mobileMoveRef.current.y : 0;
+    const touchStrafe = isMobile ? mobileMoveRef.current.x : 0;
+    const forwardInput = THREE.MathUtils.clamp(keyboardForward + touchForward, -1, 1);
+    const strafeInput = THREE.MathUtils.clamp(keyboardStrafe + touchStrafe, -1, 1);
 
     camera.getWorldDirection(direction.current);
     direction.current.y = 0;
@@ -938,15 +998,59 @@ function FirstPersonController({
   return null;
 }
 
+function FrustumCullingEnforcer() {
+  const { scene } = useThree();
+
+  useEffect(() => {
+    scene.traverse((obj) => {
+      if ("frustumCulled" in obj) {
+        obj.frustumCulled = true;
+      }
+    });
+  }, [scene]);
+
+  return null;
+}
+
 export default function NeonRoom() {
   const [locked, setLocked] = useState(false);
   const accentLightsRef = useRef<THREE.PointLight[]>([]);
+  const menuToggleRef = useRef<(() => void) | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
+  const mobileMoveRef = useRef({ x: 0, y: 0 });
+  const mobileLookRef = useRef({ dx: 0, dy: 0 });
+  const lookTouchIdRef = useRef<number | null>(null);
+  const joystickTouchIdRef = useRef<number | null>(null);
+  const cameraJoystickTouchIdRef = useRef<number | null>(null);
+  const [joystickKnob, setJoystickKnob] = useState({ x: 0, y: 0 });
+  const [cameraJoystickKnob, setCameraJoystickKnob] = useState({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const coarse = window.matchMedia("(pointer: coarse)").matches;
+    const touch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+    setIsMobile(coarse || touch);
+  }, []);
+
+  const handleFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      }
+      if (screen.orientation?.lock) {
+        await screen.orientation.lock("landscape");
+      }
+    } catch {
+      // Fullscreen and orientation lock can be blocked by browser/device policies.
+    }
+  };
 
   return (
     <div className="relative h-screen w-screen bg-black">
       <Canvas
         camera={{ fov: 75, near: 0.1, far: 200, position: [0, PLAYER_HEIGHT, 4] }}
-        gl={{ antialias: true }}
+        dpr={isMobile ? [1, 1.5] : [1, 2]}
+        shadows
+        gl={{ antialias: !isMobile, powerPreference: isMobile ? "low-power" : "high-performance" }}
       >
         <color attach="background" args={["#050510"]} />
 
@@ -956,8 +1060,16 @@ export default function NeonRoom() {
         {/* Soft fill so pearly walls read clean */}
         <ambientLight intensity={0.55} />
         {/* Subtle directional fill for depth on the white walls */}
-        <directionalLight position={[5, 8, 5]} intensity={0.4} color="#ffffff" />
+        <directionalLight
+          position={[5, 8, 5]}
+          intensity={0.4}
+          color="#ffffff"
+          castShadow={!isMobile}
+          shadow-mapSize-width={isMobile ? 256 : 1024}
+          shadow-mapSize-height={isMobile ? 256 : 1024}
+        />
 
+        <FrustumCullingEnforcer />
         <Room />
         <HoloScreens />
         <HabitacionComplement />
@@ -966,7 +1078,15 @@ export default function NeonRoom() {
         <LoungeSpotlight />
 
         <EarthMoonAnchor />
-        <FirstPersonController onLockChange={setLocked} />
+        <FirstPersonController
+          onLockChange={setLocked}
+          onMenuToggleReady={(toggle) => {
+            menuToggleRef.current = toggle;
+          }}
+          isMobile={isMobile}
+          mobileMoveRef={mobileMoveRef}
+          mobileLookRef={mobileLookRef}
+        />
       </Canvas>
 
       {!locked && (
@@ -984,6 +1104,136 @@ export default function NeonRoom() {
 
       {locked && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/80 mix-blend-difference" />
+      )}
+
+      <button
+        type="button"
+        onClick={handleFullscreen}
+        data-touch-ui="true"
+        className="fixed bottom-5 left-5 z-[9999] h-16 w-16 rounded-full border border-cyan-300/50 bg-black/40 text-[10px] font-bold tracking-wide text-cyan-100 shadow-[0_0_24px_rgba(34,211,238,0.55)] backdrop-blur-md active:scale-95"
+      >
+        FULL
+      </button>
+
+      <button
+        type="button"
+        onClick={() => {
+          menuToggleRef.current?.();
+        }}
+        data-touch-ui="true"
+        className="fixed bottom-5 right-5 z-[9999] h-16 w-16 rounded-full border border-fuchsia-300/60 bg-fuchsia-600/35 text-[10px] font-bold tracking-wide text-white shadow-[0_0_24px_rgba(217,70,239,0.6)] backdrop-blur-md active:scale-95"
+      >
+        MENU
+      </button>
+
+      {isMobile && (
+        <div
+          data-touch-ui="true"
+          className="fixed bottom-24 left-5 z-[9999] h-28 w-28 rounded-full border border-cyan-300/40 bg-black/30 backdrop-blur-md"
+          onTouchStart={(e) => {
+            const touch = e.changedTouches[0];
+            if (!touch) return;
+            joystickTouchIdRef.current = touch.identifier;
+            e.preventDefault();
+          }}
+          onTouchMove={(e) => {
+            if (joystickTouchIdRef.current === null) return;
+            const touch = Array.from(e.changedTouches).find((t) => t.identifier === joystickTouchIdRef.current);
+            if (!touch) return;
+            const el = e.currentTarget;
+            const rect = el.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            const dx = touch.clientX - centerX;
+            const dy = touch.clientY - centerY;
+            const radius = rect.width * 0.35;
+            const len = Math.hypot(dx, dy) || 1;
+            const limited = len > radius ? radius / len : 1;
+            const x = dx * limited;
+            const y = dy * limited;
+            setJoystickKnob({ x, y });
+            mobileMoveRef.current.x = x / radius;
+            mobileMoveRef.current.y = y / radius;
+            e.preventDefault();
+          }}
+          onTouchEnd={(e) => {
+            if (joystickTouchIdRef.current === null) return;
+            const ended = Array.from(e.changedTouches).some((t) => t.identifier === joystickTouchIdRef.current);
+            if (!ended) return;
+            joystickTouchIdRef.current = null;
+            setJoystickKnob({ x: 0, y: 0 });
+            mobileMoveRef.current.x = 0;
+            mobileMoveRef.current.y = 0;
+            e.preventDefault();
+          }}
+          onTouchCancel={() => {
+            joystickTouchIdRef.current = null;
+            setJoystickKnob({ x: 0, y: 0 });
+            mobileMoveRef.current.x = 0;
+            mobileMoveRef.current.y = 0;
+          }}
+        >
+          <div
+            className="absolute left-1/2 top-1/2 h-12 w-12 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-200/70 bg-cyan-400/35"
+            style={{ transform: `translate(calc(-50% + ${joystickKnob.x}px), calc(-50% + ${joystickKnob.y}px))` }}
+          />
+        </div>
+      )}
+
+      {isMobile && (
+        <div
+          data-touch-ui="true"
+          className="fixed bottom-24 right-5 z-[9999] h-28 w-28 rounded-full border border-fuchsia-300/40 bg-black/30 backdrop-blur-md"
+          onTouchStart={(e) => {
+            const touch = e.changedTouches[0];
+            if (!touch) return;
+            cameraJoystickTouchIdRef.current = touch.identifier;
+            e.preventDefault();
+          }}
+          onTouchMove={(e) => {
+            if (cameraJoystickTouchIdRef.current === null) return;
+            const touch = Array.from(e.changedTouches).find((t) => t.identifier === cameraJoystickTouchIdRef.current);
+            if (!touch) return;
+            const el = e.currentTarget;
+            const rect = el.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            const dx = touch.clientX - centerX;
+            const dy = touch.clientY - centerY;
+            const radius = rect.width * 0.35;
+            const len = Math.hypot(dx, dy) || 1;
+            const limited = len > radius ? radius / len : 1;
+            const x = dx * limited;
+            const y = dy * limited;
+            setCameraJoystickKnob({ x, y });
+            mobileLookRef.current.dx = (x / radius) * 16;
+            mobileLookRef.current.dy = (y / radius) * 16;
+            e.preventDefault();
+          }}
+          onTouchEnd={(e) => {
+            if (cameraJoystickTouchIdRef.current === null) return;
+            const ended = Array.from(e.changedTouches).some((t) => t.identifier === cameraJoystickTouchIdRef.current);
+            if (!ended) return;
+            cameraJoystickTouchIdRef.current = null;
+            setCameraJoystickKnob({ x: 0, y: 0 });
+            mobileLookRef.current.dx = 0;
+            mobileLookRef.current.dy = 0;
+            e.preventDefault();
+          }}
+          onTouchCancel={() => {
+            cameraJoystickTouchIdRef.current = null;
+            setCameraJoystickKnob({ x: 0, y: 0 });
+            mobileLookRef.current.dx = 0;
+            mobileLookRef.current.dy = 0;
+          }}
+        >
+          <div
+            className="absolute left-1/2 top-1/2 h-12 w-12 -translate-x-1/2 -translate-y-1/2 rounded-full border border-fuchsia-200/70 bg-fuchsia-400/35"
+            style={{
+              transform: `translate(calc(-50% + ${cameraJoystickKnob.x}px), calc(-50% + ${cameraJoystickKnob.y}px))`,
+            }}
+          />
+        </div>
       )}
     </div>
   );
