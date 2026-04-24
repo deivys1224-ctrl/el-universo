@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { PointerLockControls, Stars } from "@react-three/drei";
+import { Stars } from "@react-three/drei";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { PointerLockControls as ThreePointerLockControls } from "three/examples/jsm/controls/PointerLockControls.js";
 import { CSS3DObject, CSS3DRenderer } from "three/examples/jsm/renderers/CSS3DRenderer.js";
 import * as THREE from "three";
 
@@ -148,12 +149,15 @@ type CssEmbed = {
   forwardOffset?: number;
   kind?: "media" | "browser";
   title?: string;
+  isolateMouse?: boolean;
 };
 
 function ScreenEmbedsCss3D({
   embeds,
+  onEmbedInteractionChange,
 }: {
   embeds: CssEmbed[];
+  onEmbedInteractionChange?: (active: boolean) => void;
 }) {
   const { camera, gl, size } = useThree();
   const cssRendererRef = useRef<CSS3DRenderer | null>(null);
@@ -168,8 +172,9 @@ function ScreenEmbedsCss3D({
     renderer.setSize(size.width, size.height);
     renderer.domElement.style.position = "absolute";
     renderer.domElement.style.inset = "0";
-    renderer.domElement.style.pointerEvents = "auto";
-    renderer.domElement.style.cursor = "auto";
+    // Avoid an invisible global blocker; only screen elements receive events.
+    renderer.domElement.style.pointerEvents = "none";
+    renderer.domElement.style.cursor = "default";
     renderer.domElement.style.zIndex = "20";
     host.appendChild(renderer.domElement);
     cssRendererRef.current = renderer;
@@ -179,29 +184,6 @@ function ScreenEmbedsCss3D({
         void document.exitPointerLock();
       }
     };
-    const bringFront = () => {
-      unlockPointer();
-      renderer.domElement.style.zIndex = "40";
-      gl.domElement.style.pointerEvents = "none";
-    };
-    const resetLayer = () => {
-      renderer.domElement.style.zIndex = "20";
-      gl.domElement.style.pointerEvents = "auto";
-    };
-    renderer.domElement.addEventListener("mouseenter", bringFront);
-    renderer.domElement.addEventListener("mouseleave", resetLayer);
-    renderer.domElement.addEventListener("pointerenter", bringFront);
-    renderer.domElement.addEventListener("mousemove", bringFront);
-    renderer.domElement.addEventListener("wheel", bringFront, { passive: true });
-    renderer.domElement.addEventListener("mousedown", bringFront);
-    renderer.domElement.addEventListener("touchstart", bringFront, { passive: true });
-    const escReset = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        resetLayer();
-      }
-    };
-    window.addEventListener("keydown", escReset);
-
     cssObjectsRef.current = embeds.map((embed) => {
       const iframe = document.createElement("iframe");
       iframe.src = embed.src;
@@ -221,6 +203,7 @@ function ScreenEmbedsCss3D({
       shell.style.overflow = "hidden";
       shell.style.display = "flex";
       shell.style.flexDirection = "column";
+      shell.tabIndex = 0;
 
       if (embed.kind === "browser") {
         const toolbar = document.createElement("div");
@@ -283,10 +266,14 @@ function ScreenEmbedsCss3D({
           event.stopPropagation();
         }
         unlockPointer();
+        iframe.focus();
+        shell.focus();
+        onEmbedInteractionChange?.(true);
         renderer.domElement.style.zIndex = "40";
         gl.domElement.style.pointerEvents = "none";
       };
       const releaseMouse = () => {
+        onEmbedInteractionChange?.(false);
         renderer.domElement.style.zIndex = "20";
         gl.domElement.style.pointerEvents = "auto";
       };
@@ -294,6 +281,7 @@ function ScreenEmbedsCss3D({
       shell.addEventListener("mousemove", engageMouse);
       shell.addEventListener("mousedown", engageMouse);
       shell.addEventListener("wheel", engageMouse, { passive: true });
+      shell.addEventListener("mouseleave", releaseMouse);
       iframe.addEventListener("mouseenter", engageMouse);
       iframe.addEventListener("mousemove", engageMouse);
       iframe.addEventListener("mousedown", engageMouse);
@@ -311,6 +299,7 @@ function ScreenEmbedsCss3D({
           shell.removeEventListener("mousemove", engageMouse);
           shell.removeEventListener("mousedown", engageMouse);
           shell.removeEventListener("wheel", engageMouse);
+          shell.removeEventListener("mouseleave", releaseMouse);
           iframe.removeEventListener("mouseenter", engageMouse);
           iframe.removeEventListener("mousemove", engageMouse);
           iframe.removeEventListener("mousedown", engageMouse);
@@ -320,25 +309,18 @@ function ScreenEmbedsCss3D({
     });
 
     return () => {
+      onEmbedInteractionChange?.(false);
       for (const { obj, shell, cleanup } of cssObjectsRef.current) {
         cleanup();
         cssSceneRef.current.remove(obj);
         shell.remove();
       }
       cssObjectsRef.current = [];
-      renderer.domElement.removeEventListener("mouseenter", bringFront);
-      renderer.domElement.removeEventListener("mouseleave", resetLayer);
-      renderer.domElement.removeEventListener("pointerenter", bringFront);
-      renderer.domElement.removeEventListener("mousemove", bringFront);
-      renderer.domElement.removeEventListener("wheel", bringFront);
-      renderer.domElement.removeEventListener("mousedown", bringFront);
-      renderer.domElement.removeEventListener("touchstart", bringFront);
-      window.removeEventListener("keydown", escReset);
       gl.domElement.style.pointerEvents = "auto";
       renderer.domElement.remove();
       cssRendererRef.current = null;
     };
-  }, [embeds, gl, size.height, size.width]);
+  }, [embeds, gl, onEmbedInteractionChange, size.height, size.width]);
 
   useEffect(() => {
     cssRendererRef.current?.setSize(size.width, size.height);
@@ -366,7 +348,11 @@ function ScreenEmbedsCss3D({
 }
 
 // ---------- 4 holographic screens, one centered on each wall ----------
-function HoloScreens() {
+function HoloScreens({
+  onEmbedInteractionChange,
+}: {
+  onEmbedInteractionChange?: (active: boolean) => void;
+}) {
   const half = ROOM_SIZE / 2;
   const y = WALL_HEIGHT / 2;
   const inset = 1.25;
@@ -380,6 +366,7 @@ function HoloScreens() {
         width: panelWidth * 0.95,
         height: panelHeight * 0.9,
         src: "https://www.youtube.com/embed/VOj_xsc-EBM?autoplay=1&mute=1&loop=1&playlist=VOj_xsc-EBM",
+        forwardOffset: 0.01,
       },
       {
         position: [half - inset, y, 0],
@@ -395,10 +382,10 @@ function HoloScreens() {
         rotation: [0, Math.PI / 2, 0],
         width: panelWidth * 0.95,
         height: panelHeight * 0.9,
-        src: "https://www.google.com/search?igu=1&q=colombia",
+        src: "https://www.facebook.com",
         forwardOffset: 0.02,
         kind: "browser",
-        title: "Chrome Virtual - Google",
+        title: "Facebook",
       },
       {
         // Pantalla 4 (restante / trasera): Facebook login/home
@@ -446,7 +433,7 @@ function HoloScreens() {
         width={panelWidth}
         height={panelHeight}
       />
-      <ScreenEmbedsCss3D embeds={screenEmbeds} />
+      <ScreenEmbedsCss3D embeds={screenEmbeds} onEmbedInteractionChange={onEmbedInteractionChange} />
     </>
   );
 }
@@ -853,42 +840,69 @@ function EarthMoonAnchor() {
 }
 
 // ---------- First Person Controller (WASD) ----------
-function FirstPersonController() {
-  const { camera } = useThree();
-  const keys = useRef<Record<string, boolean>>({});
-  const velocity = useRef(new THREE.Vector3());
+function FirstPersonController({
+  onLockChange,
+}: {
+  onLockChange: (value: boolean) => void;
+}) {
+  const { camera, gl } = useThree();
+  const controlsRef = useRef<ThreePointerLockControls | null>(null);
+  const moveState = useRef({
+    forward: false,
+    backward: false,
+    left: false,
+    right: false,
+  });
   const direction = useRef(new THREE.Vector3());
+  const right = useRef(new THREE.Vector3());
 
   useEffect(() => {
     camera.position.set(...SOFA_SPAWN);
   }, [camera]);
 
   useEffect(() => {
-    const movementKeys = new Set([
-      "KeyW",
-      "KeyA",
-      "KeyS",
-      "KeyD",
-      "Space",
-      "ShiftLeft",
-      "ShiftRight",
-    ]);
+    const controls = new ThreePointerLockControls(camera, gl.domElement);
+    controls.pointerSpeed = 1;
+    controlsRef.current = controls;
 
-    const isTypingTarget = (target: EventTarget | null) => {
-      const el = target as HTMLElement | null;
-      if (!el) return false;
-      const tag = el.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-      return Boolean(el.isContentEditable);
+    const handleLock = () => onLockChange(true);
+    const handleUnlock = () => {
+      onLockChange(false);
+      moveState.current.forward = false;
+      moveState.current.backward = false;
+      moveState.current.left = false;
+      moveState.current.right = false;
     };
+    controls.addEventListener("lock", handleLock);
+    controls.addEventListener("unlock", handleUnlock);
 
+    return () => {
+      controls.removeEventListener("lock", handleLock);
+      controls.removeEventListener("unlock", handleUnlock);
+      controls.dispose();
+      controlsRef.current = null;
+    };
+  }, [camera, gl, onLockChange]);
+
+  useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target) && movementKeys.has(e.code)) return;
-      keys.current[e.code] = true;
+      if (e.code === "KeyM") {
+        const controls = controlsRef.current;
+        if (!controls) return;
+        if (controls.isLocked) controls.unlock();
+        else controls.lock();
+        return;
+      }
+      if (e.code === "KeyW") moveState.current.forward = true;
+      if (e.code === "KeyS") moveState.current.backward = true;
+      if (e.code === "KeyA") moveState.current.left = true;
+      if (e.code === "KeyD") moveState.current.right = true;
     };
     const up = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target) && movementKeys.has(e.code)) return;
-      keys.current[e.code] = false;
+      if (e.code === "KeyW") moveState.current.forward = false;
+      if (e.code === "KeyS") moveState.current.backward = false;
+      if (e.code === "KeyA") moveState.current.left = false;
+      if (e.code === "KeyD") moveState.current.right = false;
     };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
@@ -899,19 +913,21 @@ function FirstPersonController() {
   }, []);
 
   useFrame((_, delta) => {
-    const k = keys.current;
-    const forward = (k["KeyW"] ? 1 : 0) - (k["KeyS"] ? 1 : 0);
-    const strafe = (k["KeyD"] ? 1 : 0) - (k["KeyA"] ? 1 : 0);
+    const controls = controlsRef.current;
+    if (!controls?.isLocked) return;
 
-    direction.current.set(strafe, 0, -forward).normalize();
-    const yaw = new THREE.Euler(0, camera.rotation.y, 0, "YXZ");
-    direction.current.applyEuler(yaw);
+    const state = moveState.current;
+    const forwardInput = (state.forward ? 1 : 0) - (state.backward ? 1 : 0);
+    const strafeInput = (state.right ? 1 : 0) - (state.left ? 1 : 0);
 
-    velocity.current.x = direction.current.x * MOVE_SPEED;
-    velocity.current.z = direction.current.z * MOVE_SPEED;
+    camera.getWorldDirection(direction.current);
+    direction.current.y = 0;
+    if (direction.current.lengthSq() > 0) direction.current.normalize();
+    right.current.crossVectors(direction.current, camera.up).normalize();
 
-    camera.position.x += velocity.current.x * delta;
-    camera.position.z += velocity.current.z * delta;
+    const distance = MOVE_SPEED * delta;
+    camera.position.addScaledVector(direction.current, forwardInput * distance);
+    camera.position.addScaledVector(right.current, strafeInput * distance);
 
     const limit = ROOM_SIZE / 2 - PLAYER_RADIUS;
     camera.position.x = THREE.MathUtils.clamp(camera.position.x, -limit, limit);
@@ -950,18 +966,17 @@ export default function NeonRoom() {
         <LoungeSpotlight />
 
         <EarthMoonAnchor />
-        <FirstPersonController />
-
-        <PointerLockControls onLock={() => setLocked(true)} onUnlock={() => setLocked(false)} />
+        <FirstPersonController onLockChange={setLocked} />
       </Canvas>
 
       {!locked && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="pointer-events-auto rounded-2xl border border-white/10 bg-black/70 px-8 py-6 text-center backdrop-blur-md">
+          <div className="pointer-events-none rounded-2xl border border-white/10 bg-black/70 px-8 py-6 text-center backdrop-blur-md">
             <h1 className="text-2xl font-bold tracking-tight text-white">Pearl Room</h1>
             <p className="mt-2 text-sm text-white/70">
-              Click anywhere to enter - <span className="font-mono">WASD</span> to move - Mouse to
-              look - <span className="font-mono">ESC</span> to exit
+              Press <span className="font-mono">M</span> to lock/unlock mouse -{" "}
+              <span className="font-mono">WASD</span> to move - <span className="font-mono">ESC</span>{" "}
+              to exit
             </p>
           </div>
         </div>
