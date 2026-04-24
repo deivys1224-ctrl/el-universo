@@ -146,9 +146,15 @@ type CssEmbed = {
   height: number;
   src: string;
   forwardOffset?: number;
+  kind?: "media" | "browser";
+  title?: string;
 };
 
-function ScreenEmbedsCss3D({ embeds }: { embeds: CssEmbed[] }) {
+function ScreenEmbedsCss3D({
+  embeds,
+}: {
+  embeds: CssEmbed[];
+}) {
   const { camera, gl, size } = useThree();
   const cssRendererRef = useRef<CSS3DRenderer | null>(null);
   const cssSceneRef = useRef<THREE.Scene>(new THREE.Scene());
@@ -189,14 +195,20 @@ function ScreenEmbedsCss3D({ embeds }: { embeds: CssEmbed[] }) {
     renderer.domElement.addEventListener("wheel", bringFront, { passive: true });
     renderer.domElement.addEventListener("mousedown", bringFront);
     renderer.domElement.addEventListener("touchstart", bringFront, { passive: true });
+    const escReset = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        resetLayer();
+      }
+    };
+    window.addEventListener("keydown", escReset);
 
     cssObjectsRef.current = embeds.map((embed) => {
       const iframe = document.createElement("iframe");
       iframe.src = embed.src;
       iframe.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
       iframe.referrerPolicy = "strict-origin-when-cross-origin";
-      iframe.style.width = "1280px";
-      iframe.style.height = "720px";
+      iframe.style.width = "100%";
+      iframe.style.height = embed.kind === "browser" ? "calc(100% - 56px)" : "100%";
       iframe.style.border = "0";
       iframe.style.pointerEvents = "auto";
       iframe.style.cursor = "auto";
@@ -206,6 +218,64 @@ function ScreenEmbedsCss3D({ embeds }: { embeds: CssEmbed[] }) {
       shell.style.height = "720px";
       shell.style.background = "#000";
       shell.style.pointerEvents = "auto";
+      shell.style.overflow = "hidden";
+      shell.style.display = "flex";
+      shell.style.flexDirection = "column";
+
+      if (embed.kind === "browser") {
+        const toolbar = document.createElement("div");
+        toolbar.style.height = "56px";
+        toolbar.style.display = "flex";
+        toolbar.style.alignItems = "center";
+        toolbar.style.gap = "10px";
+        toolbar.style.padding = "0 12px";
+        toolbar.style.background = "rgba(0,0,0,0.92)";
+        toolbar.style.borderBottom = "1px solid rgba(0,255,255,0.35)";
+        toolbar.style.pointerEvents = "auto";
+        toolbar.style.flex = "0 0 56px";
+
+        const mkBtn = (label: string) => {
+          const btn = document.createElement("button");
+          btn.textContent = label;
+          btn.style.background = "rgba(0,255,255,0.12)";
+          btn.style.color = "#9ffcff";
+          btn.style.border = "1px solid rgba(0,255,255,0.45)";
+          btn.style.borderRadius = "6px";
+          btn.style.padding = "5px 10px";
+          btn.style.fontSize = "13px";
+          btn.style.cursor = "pointer";
+          btn.style.pointerEvents = "auto";
+          return btn;
+        };
+
+        const backBtn = mkBtn("Atras");
+        const homeBtn = mkBtn("Home");
+        const title = document.createElement("div");
+        title.textContent = embed.title ?? "Navegador";
+        title.style.marginLeft = "6px";
+        title.style.color = "rgba(180,255,255,0.9)";
+        title.style.font = "500 13px sans-serif";
+        title.style.whiteSpace = "nowrap";
+        title.style.overflow = "hidden";
+        title.style.textOverflow = "ellipsis";
+
+        backBtn.onclick = () => {
+          try {
+            iframe.contentWindow?.history.back();
+          } catch {
+            iframe.src = embed.src;
+          }
+        };
+        homeBtn.onclick = () => {
+          iframe.src = embed.src;
+        };
+
+        toolbar.appendChild(backBtn);
+        toolbar.appendChild(homeBtn);
+        toolbar.appendChild(title);
+        shell.appendChild(toolbar);
+      }
+
       shell.appendChild(iframe);
 
       const engageMouse = (event?: Event) => {
@@ -221,12 +291,13 @@ function ScreenEmbedsCss3D({ embeds }: { embeds: CssEmbed[] }) {
         gl.domElement.style.pointerEvents = "auto";
       };
       shell.addEventListener("mouseenter", engageMouse);
+      shell.addEventListener("mousemove", engageMouse);
       shell.addEventListener("mousedown", engageMouse);
       shell.addEventListener("wheel", engageMouse, { passive: true });
       iframe.addEventListener("mouseenter", engageMouse);
+      iframe.addEventListener("mousemove", engageMouse);
       iframe.addEventListener("mousedown", engageMouse);
       iframe.addEventListener("wheel", engageMouse, { passive: true });
-      shell.addEventListener("mouseleave", releaseMouse);
 
       const obj = new CSS3DObject(shell);
       obj.element.style.pointerEvents = "auto";
@@ -237,12 +308,13 @@ function ScreenEmbedsCss3D({ embeds }: { embeds: CssEmbed[] }) {
         shell,
         cleanup: () => {
           shell.removeEventListener("mouseenter", engageMouse);
+          shell.removeEventListener("mousemove", engageMouse);
           shell.removeEventListener("mousedown", engageMouse);
           shell.removeEventListener("wheel", engageMouse);
           iframe.removeEventListener("mouseenter", engageMouse);
+          iframe.removeEventListener("mousemove", engageMouse);
           iframe.removeEventListener("mousedown", engageMouse);
           iframe.removeEventListener("wheel", engageMouse);
-          shell.removeEventListener("mouseleave", releaseMouse);
         },
       };
     });
@@ -261,6 +333,7 @@ function ScreenEmbedsCss3D({ embeds }: { embeds: CssEmbed[] }) {
       renderer.domElement.removeEventListener("wheel", bringFront);
       renderer.domElement.removeEventListener("mousedown", bringFront);
       renderer.domElement.removeEventListener("touchstart", bringFront);
+      window.removeEventListener("keydown", escReset);
       gl.domElement.style.pointerEvents = "auto";
       renderer.domElement.remove();
       cssRendererRef.current = null;
@@ -315,6 +388,28 @@ function HoloScreens() {
         height: panelHeight * 0.9,
         src: "https://www.youtube.com/embed/gL_rzDxgSw8?autoplay=1&mute=1&loop=1&playlist=gL_rzDxgSw8",
         forwardOffset: 0.01,
+      },
+      {
+        // Pantalla 3 (lateral izquierda): navegador embebible
+        position: [-half + inset, y, 0],
+        rotation: [0, Math.PI / 2, 0],
+        width: panelWidth * 0.95,
+        height: panelHeight * 0.9,
+        src: "https://www.google.com/search?igu=1&q=colombia",
+        forwardOffset: 0.02,
+        kind: "browser",
+        title: "Chrome Virtual - Google",
+      },
+      {
+        // Pantalla 4 (restante / trasera): Facebook login/home
+        position: [0, y, -half + inset],
+        rotation: [0, 0, 0],
+        width: panelWidth * 0.95,
+        height: panelHeight * 0.9,
+        src: "https://www.google.com/search?igu=1",
+        forwardOffset: 0.01,
+        kind: "browser",
+        title: "Chrome Virtual - Google",
       },
     ],
     [half, inset, panelHeight, panelWidth, y],
