@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { PointerLockControls, Stars } from "@react-three/drei";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { CSS3DObject, CSS3DRenderer } from "three/examples/jsm/renderers/CSS3DRenderer.js";
 import * as THREE from "three";
 
 const ROOM_SIZE = 20;
@@ -8,6 +10,7 @@ const WALL_HEIGHT = 8;
 const PLAYER_HEIGHT = 1.7;
 const PLAYER_RADIUS = 0.4;
 const MOVE_SPEED = 4.5;
+const SOFA_SPAWN: [number, number, number] = [-6.4, PLAYER_HEIGHT, -6.2];
 
 const WALL_COLOR = "#EAECEE";
 
@@ -92,55 +95,436 @@ function HoloScreen({
   width = 8,
   height = 4.5,
   frameColor = "#00ffff",
+  panelOpacity = 1,
+  showMask = true,
 }: {
   position: [number, number, number];
   rotation: [number, number, number];
   width?: number;
   height?: number;
   frameColor?: string;
+  panelOpacity?: number;
+  showMask?: boolean;
 }) {
   const w = width;
   const h = height;
+  const panelInset = 0.1;
+  const frameInset = panelInset + 0.01;
   return (
     <group position={position} rotation={rotation}>
-      {/* Dark holographic panel so stars/content read on light walls */}
-      <mesh>
-        <planeGeometry args={[w, h]} />
-        <meshBasicMaterial color="#02030a" toneMapped={false} />
+      {/* Solid black panel with thickness to block artifacts behind it */}
+      <mesh position={[0, 0, panelInset]}>
+        <boxGeometry args={[w, h, 0.12]} />
+        <meshBasicMaterial color={0x000000} toneMapped={false} transparent opacity={panelOpacity} />
       </mesh>
+      {showMask && (
+        <mesh position={[0, 0, panelInset + 0.08]} renderOrder={2000}>
+          <planeGeometry args={[w, h]} />
+          <meshBasicMaterial color={0x000000} toneMapped={false} depthTest={false} depthWrite={false} />
+        </mesh>
+      )}
       {/* Border lines using thin emissive planes */}
       {[
-        { p: [0, h / 2, 0.01] as [number, number, number], s: [w, 0.04] as [number, number] },
-        { p: [0, -h / 2, 0.01] as [number, number, number], s: [w, 0.04] as [number, number] },
-        { p: [-w / 2, 0, 0.01] as [number, number, number], s: [0.04, h] as [number, number] },
-        { p: [w / 2, 0, 0.01] as [number, number, number], s: [0.04, h] as [number, number] },
+        { p: [0, h / 2, frameInset] as [number, number, number], s: [w, 0.04] as [number, number] },
+        { p: [0, -h / 2, frameInset] as [number, number, number], s: [w, 0.04] as [number, number] },
+        { p: [-w / 2, 0, frameInset] as [number, number, number], s: [0.04, h] as [number, number] },
+        { p: [w / 2, 0, frameInset] as [number, number, number], s: [0.04, h] as [number, number] },
       ].map((b, i) => (
-        <mesh key={i} position={b.p}>
+        <mesh key={i} position={b.p} renderOrder={2001}>
           <planeGeometry args={b.s} />
-          <meshBasicMaterial color={frameColor} toneMapped={false} />
+          <meshBasicMaterial color={frameColor} toneMapped={false} depthTest={false} depthWrite={false} />
         </mesh>
       ))}
     </group>
   );
 }
 
+type CssEmbed = {
+  position: [number, number, number];
+  rotation: [number, number, number];
+  width: number;
+  height: number;
+  src: string;
+  forwardOffset?: number;
+};
+
+function ScreenEmbedsCss3D({ embeds }: { embeds: CssEmbed[] }) {
+  const { camera, gl, size } = useThree();
+  const cssRendererRef = useRef<CSS3DRenderer | null>(null);
+  const cssSceneRef = useRef<THREE.Scene>(new THREE.Scene());
+  const cssObjectsRef = useRef<Array<{ obj: CSS3DObject; shell: HTMLDivElement; cleanup: () => void }>>([]);
+
+  useEffect(() => {
+    const host = gl.domElement.parentElement;
+    if (!host) return;
+
+    const renderer = new CSS3DRenderer();
+    renderer.setSize(size.width, size.height);
+    renderer.domElement.style.position = "absolute";
+    renderer.domElement.style.inset = "0";
+    renderer.domElement.style.pointerEvents = "auto";
+    renderer.domElement.style.cursor = "auto";
+    renderer.domElement.style.zIndex = "20";
+    host.appendChild(renderer.domElement);
+    cssRendererRef.current = renderer;
+
+    const unlockPointer = () => {
+      if (document.pointerLockElement) {
+        void document.exitPointerLock();
+      }
+    };
+    const bringFront = () => {
+      unlockPointer();
+      renderer.domElement.style.zIndex = "40";
+      gl.domElement.style.pointerEvents = "none";
+    };
+    const resetLayer = () => {
+      renderer.domElement.style.zIndex = "20";
+      gl.domElement.style.pointerEvents = "auto";
+    };
+    renderer.domElement.addEventListener("mouseenter", bringFront);
+    renderer.domElement.addEventListener("mouseleave", resetLayer);
+    renderer.domElement.addEventListener("pointerenter", bringFront);
+    renderer.domElement.addEventListener("mousemove", bringFront);
+    renderer.domElement.addEventListener("wheel", bringFront, { passive: true });
+    renderer.domElement.addEventListener("mousedown", bringFront);
+    renderer.domElement.addEventListener("touchstart", bringFront, { passive: true });
+
+    cssObjectsRef.current = embeds.map((embed) => {
+      const iframe = document.createElement("iframe");
+      iframe.src = embed.src;
+      iframe.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
+      iframe.referrerPolicy = "strict-origin-when-cross-origin";
+      iframe.style.width = "1280px";
+      iframe.style.height = "720px";
+      iframe.style.border = "0";
+      iframe.style.pointerEvents = "auto";
+      iframe.style.cursor = "auto";
+
+      const shell = document.createElement("div");
+      shell.style.width = "1280px";
+      shell.style.height = "720px";
+      shell.style.background = "#000";
+      shell.style.pointerEvents = "auto";
+      shell.appendChild(iframe);
+
+      const engageMouse = (event?: Event) => {
+        if (event) {
+          event.stopPropagation();
+        }
+        unlockPointer();
+        renderer.domElement.style.zIndex = "40";
+        gl.domElement.style.pointerEvents = "none";
+      };
+      const releaseMouse = () => {
+        renderer.domElement.style.zIndex = "20";
+        gl.domElement.style.pointerEvents = "auto";
+      };
+      shell.addEventListener("mouseenter", engageMouse);
+      shell.addEventListener("mousedown", engageMouse);
+      shell.addEventListener("wheel", engageMouse, { passive: true });
+      iframe.addEventListener("mouseenter", engageMouse);
+      iframe.addEventListener("mousedown", engageMouse);
+      iframe.addEventListener("wheel", engageMouse, { passive: true });
+      shell.addEventListener("mouseleave", releaseMouse);
+
+      const obj = new CSS3DObject(shell);
+      obj.element.style.pointerEvents = "auto";
+      obj.scale.set(embed.width / 1280, embed.height / 720, 1);
+      cssSceneRef.current.add(obj);
+      return {
+        obj,
+        shell,
+        cleanup: () => {
+          shell.removeEventListener("mouseenter", engageMouse);
+          shell.removeEventListener("mousedown", engageMouse);
+          shell.removeEventListener("wheel", engageMouse);
+          iframe.removeEventListener("mouseenter", engageMouse);
+          iframe.removeEventListener("mousedown", engageMouse);
+          iframe.removeEventListener("wheel", engageMouse);
+          shell.removeEventListener("mouseleave", releaseMouse);
+        },
+      };
+    });
+
+    return () => {
+      for (const { obj, shell, cleanup } of cssObjectsRef.current) {
+        cleanup();
+        cssSceneRef.current.remove(obj);
+        shell.remove();
+      }
+      cssObjectsRef.current = [];
+      renderer.domElement.removeEventListener("mouseenter", bringFront);
+      renderer.domElement.removeEventListener("mouseleave", resetLayer);
+      renderer.domElement.removeEventListener("pointerenter", bringFront);
+      renderer.domElement.removeEventListener("mousemove", bringFront);
+      renderer.domElement.removeEventListener("wheel", bringFront);
+      renderer.domElement.removeEventListener("mousedown", bringFront);
+      renderer.domElement.removeEventListener("touchstart", bringFront);
+      gl.domElement.style.pointerEvents = "auto";
+      renderer.domElement.remove();
+      cssRendererRef.current = null;
+    };
+  }, [embeds, gl, size.height, size.width]);
+
+  useEffect(() => {
+    cssRendererRef.current?.setSize(size.width, size.height);
+  }, [size.height, size.width]);
+
+  useFrame(() => {
+    const renderer = cssRendererRef.current;
+    if (!renderer) return;
+    for (let i = 0; i < embeds.length; i += 1) {
+      const entry = cssObjectsRef.current[i];
+      const embed = embeds[i];
+      if (!entry || !embed) continue;
+      const { obj } = entry;
+      obj.position.set(embed.position[0], embed.position[1], embed.position[2]);
+      obj.rotation.set(embed.rotation[0], embed.rotation[1], embed.rotation[2]);
+      const offset = embed.forwardOffset ?? 0.11;
+      const forward = new THREE.Vector3(0, 0, offset).applyEuler(new THREE.Euler(...embed.rotation));
+      obj.position.add(forward);
+    }
+
+    renderer.render(cssSceneRef.current, camera);
+  });
+
+  return null;
+}
+
 // ---------- 4 holographic screens, one centered on each wall ----------
 function HoloScreens() {
   const half = ROOM_SIZE / 2;
   const y = WALL_HEIGHT / 2;
-  const off = 0.03;
+  const inset = 1.25;
+  const panelWidth = 6.8;
+  const panelHeight = 3.8;
+  const screenEmbeds = useMemo<CssEmbed[]>(
+    () => [
+      {
+        position: [0, y, half - inset],
+        rotation: [0, Math.PI, 0],
+        width: panelWidth * 0.95,
+        height: panelHeight * 0.9,
+        src: "https://www.youtube.com/embed/VOj_xsc-EBM?autoplay=1&mute=1&loop=1&playlist=VOj_xsc-EBM",
+      },
+      {
+        position: [half - inset, y, 0],
+        rotation: [0, -Math.PI / 2, 0],
+        width: panelWidth * 0.95,
+        height: panelHeight * 0.9,
+        src: "https://www.youtube.com/embed/gL_rzDxgSw8?autoplay=1&mute=1&loop=1&playlist=gL_rzDxgSw8",
+        forwardOffset: 0.01,
+      },
+    ],
+    [half, inset, panelHeight, panelWidth, y],
+  );
   return (
     <>
       {/* Back wall (-Z) */}
-      <HoloScreen position={[0, y, -half + off]} rotation={[0, 0, 0]} />
+      <HoloScreen
+        position={[0, y, -half + inset]}
+        rotation={[0, 0, 0]}
+        width={panelWidth}
+        height={panelHeight}
+      />
       {/* Front wall (+Z) */}
-      <HoloScreen position={[0, y, half - off]} rotation={[0, Math.PI, 0]} />
+      <HoloScreen
+        position={[0, y, half - inset]}
+        rotation={[0, Math.PI, 0]}
+        width={panelWidth}
+        height={panelHeight}
+        panelOpacity={0.06}
+        showMask={false}
+      />
       {/* Left wall (-X) */}
-      <HoloScreen position={[-half + off, y, 0]} rotation={[0, Math.PI / 2, 0]} />
+      <HoloScreen
+        position={[-half + inset, y, 0]}
+        rotation={[0, Math.PI / 2, 0]}
+        width={panelWidth}
+        height={panelHeight}
+      />
       {/* Right wall (+X) */}
-      <HoloScreen position={[half - off, y, 0]} rotation={[0, -Math.PI / 2, 0]} />
+      <HoloScreen
+        position={[half - inset, y, 0]}
+        rotation={[0, -Math.PI / 2, 0]}
+        width={panelWidth}
+        height={panelHeight}
+      />
+      <ScreenEmbedsCss3D embeds={screenEmbeds} />
     </>
   );
+}
+
+function habitacionGlbUrl() {
+  const base = import.meta.env.BASE_URL || "/";
+  return base.endsWith("/") ? `${base}habitacion.glb` : `${base}/habitacion.glb`;
+}
+
+// ---------- Complemento decorativo: habitacion.glb ----------
+function HabitacionComplement() {
+  const [model, setModel] = useState<THREE.Group | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const frameNamePattern = /(picture|frame|cuadro|marco)/i;
+  const lampNamePattern = /(lamp|light_fixture|fixture|lampara|l[a?]mpara|ceiling_light|sconce|bulb)/i;
+
+  useEffect(() => {
+    let cancelled = false;
+    const loader = new GLTFLoader();
+
+    setLoadError(false);
+    loader.load(
+      habitacionGlbUrl(),
+      (gltf) => {
+        if (cancelled) return;
+
+        const root = gltf.scene.clone(true);
+        const detectedFrames: THREE.Mesh[] = [];
+        root.traverse((obj) => {
+          if (!(obj instanceof THREE.Mesh)) return;
+          if (obj.name && lampNamePattern.test(obj.name)) {
+            obj.visible = false;
+            return;
+          }
+          obj.castShadow = true;
+          obj.receiveShadow = true;
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const m of mats) {
+            if (m && "side" in m) (m as THREE.Material).side = THREE.DoubleSide;
+          }
+          if (obj.name && frameNamePattern.test(obj.name)) {
+            detectedFrames.push(obj);
+          }
+        });
+
+        // Add cyan translucent capture-panels over frame-like meshes.
+        for (const frame of detectedFrames) {
+          frame.geometry.computeBoundingBox();
+          const bbox = frame.geometry.boundingBox;
+          if (!bbox) continue;
+
+          const size = new THREE.Vector3();
+          const center = new THREE.Vector3();
+          bbox.getSize(size);
+          bbox.getCenter(center);
+
+          // Treat smallest local dimension as depth and push panel 0.01 outward.
+          const dims: Array<{ axis: "x" | "y" | "z"; value: number }> = [
+            { axis: "x", value: Math.abs(size.x) },
+            { axis: "y", value: Math.abs(size.y) },
+            { axis: "z", value: Math.abs(size.z) },
+          ] as const as Array<{ axis: "x" | "y" | "z"; value: number }>;
+          dims.sort((a, b) => a.value - b.value);
+
+          const depthAxis = dims[0]?.axis ?? "z";
+          const widthAxis = dims[2]?.axis ?? "x";
+          const heightAxis = dims[1]?.axis ?? "y";
+
+          const axisSize = (v: THREE.Vector3, axis: "x" | "y" | "z") =>
+            axis === "x" ? v.x : axis === "y" ? v.y : v.z;
+          const panelWidth = Math.max(Math.abs(axisSize(size, widthAxis)), 0.05);
+          const panelHeight = Math.max(Math.abs(axisSize(size, heightAxis)), 0.05);
+
+          const panel = new THREE.Mesh(
+            new THREE.PlaneGeometry(panelWidth, panelHeight),
+            new THREE.MeshBasicMaterial({
+              color: 0x00ffff,
+              opacity: 0.3,
+              transparent: true,
+              side: THREE.DoubleSide,
+              depthWrite: false,
+            }),
+          );
+
+          panel.position.copy(center);
+          const depthValue = depthAxis === "x" ? bbox.max.x : depthAxis === "y" ? bbox.max.y : bbox.max.z;
+          if (depthAxis === "x") panel.position.x = depthValue + 0.01;
+          if (depthAxis === "y") panel.position.y = depthValue + 0.01;
+          if (depthAxis === "z") panel.position.z = depthValue + 0.01;
+          panel.renderOrder = 10;
+
+          // Orient plane so its normal matches the chosen depth axis.
+          if (depthAxis === "x") panel.rotation.y = Math.PI / 2;
+          if (depthAxis === "y") panel.rotation.x = -Math.PI / 2;
+
+          frame.add(panel);
+        }
+
+        const box = new THREE.Box3().setFromObject(root);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+
+        const minDim = 0.02;
+        if (!Number.isFinite(size.x) || !Number.isFinite(size.y) || !Number.isFinite(size.z)) {
+          setLoadError(true);
+          return;
+        }
+
+        const sy = Math.max(size.y, minDim);
+        // Uniform scale based on height so proportions remain intact.
+        const uniformScale = WALL_HEIGHT / sy;
+        root.scale.setScalar(uniformScale);
+        // Force-fit width/depth to room size plus tiny overscan (no visible gaps).
+        root.updateMatrixWorld(true);
+        const fittedBox = new THREE.Box3().setFromObject(root);
+        const fittedSize = new THREE.Vector3();
+        fittedBox.getSize(fittedSize);
+        const targetSpan = ROOM_SIZE + 0.6;
+        root.scale.x *= targetSpan / Math.max(fittedSize.x, minDim);
+        root.scale.z *= targetSpan / Math.max(fittedSize.z, minDim);
+
+        root.updateMatrixWorld(true);
+        const scaledBox = new THREE.Box3().setFromObject(root);
+        const center = new THREE.Vector3();
+        scaledBox.getCenter(center);
+
+        if (!Number.isFinite(center.x) || !Number.isFinite(center.y) || !Number.isFinite(center.z)) {
+          setLoadError(true);
+          return;
+        }
+
+        // Center on X/Z and lift so model floor aligns with scene floor (y = 0).
+        root.position.set(-center.x, -scaledBox.min.y, -center.z);
+        setModel(root);
+      },
+      undefined,
+      () => {
+        if (!cancelled) setLoadError(true);
+      },
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (loadError) {
+    return (
+      <group>
+        <lineSegments position={[0, WALL_HEIGHT / 2, 0]} renderOrder={1000}>
+          <edgesGeometry args={[new THREE.BoxGeometry(ROOM_SIZE * 0.98, WALL_HEIGHT * 0.98, ROOM_SIZE * 0.98)]} />
+          <lineBasicMaterial color="#00ffff" toneMapped={false} depthTest={false} />
+        </lineSegments>
+        <mesh position={[0, PLAYER_HEIGHT, -2]} renderOrder={1000}>
+          <boxGeometry args={[0.6, 0.6, 0.6]} />
+          <meshBasicMaterial color="#ff2bd6" toneMapped={false} depthTest={false} />
+        </mesh>
+        <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={999}>
+          <planeGeometry args={[ROOM_SIZE * 0.98, ROOM_SIZE * 0.98]} />
+          <meshBasicMaterial
+            color="#00ffff"
+            transparent
+            opacity={0.08}
+            depthWrite={false}
+            depthTest={false}
+            toneMapped={false}
+          />
+        </mesh>
+      </group>
+    );
+  }
+
+  return model ? <primitive object={model} /> : null;
 }
 
 // ---------- Modern lounge set in the back-left corner ----------
@@ -381,7 +765,7 @@ function FirstPersonController() {
   const direction = useRef(new THREE.Vector3());
 
   useEffect(() => {
-    camera.position.set(0, PLAYER_HEIGHT, 4);
+    camera.position.set(...SOFA_SPAWN);
   }, [camera]);
 
   useEffect(() => {
@@ -465,6 +849,7 @@ export default function NeonRoom() {
 
         <Room />
         <HoloScreens />
+        <HabitacionComplement />
         <NeonAccents accentLightRefs={accentLightsRef} />
         <LoungeSet />
         <LoungeSpotlight />
@@ -480,8 +865,8 @@ export default function NeonRoom() {
           <div className="pointer-events-auto rounded-2xl border border-white/10 bg-black/70 px-8 py-6 text-center backdrop-blur-md">
             <h1 className="text-2xl font-bold tracking-tight text-white">Pearl Room</h1>
             <p className="mt-2 text-sm text-white/70">
-              Click anywhere to enter · <span className="font-mono">WASD</span> to move · Mouse to
-              look · <span className="font-mono">ESC</span> to exit
+              Click anywhere to enter - <span className="font-mono">WASD</span> to move - Mouse to
+              look - <span className="font-mono">ESC</span> to exit
             </p>
           </div>
         </div>
